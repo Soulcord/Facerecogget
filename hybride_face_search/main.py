@@ -2,6 +2,7 @@ import os
 import json
 from pimeyes_fallback import fallback_to_pimeyes
 
+
 # Simuleer resultaat van gezichtsmatching
 def fake_local_match(image_path):
     return None  # Simuleert "geen match"
@@ -14,6 +15,9 @@ def main():
     if result is None:
         print("❌ Geen lokale match gevonden. Probeer PimEyes...")
         fallback = fallback_to_pimeyes(image_path)
+        if fallback is None:
+            print("❌ Fallback mislukt")
+            return
         fallback["match_found"] = False
         fallback["local_match"] = None
 

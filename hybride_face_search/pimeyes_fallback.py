@@ -1,105 +1,76 @@
-from playwright.sync_api import sync_playwright
 import os
+import time
 from datetime import datetime
 
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+
 def fallback_to_pimeyes(image_path: str, results_dir="results") -> dict:
-    """
-    Upload een afbeelding naar PimEyes door:
-    1) Cookies te accepteren ("Allow all")
-    2) De upload-modal te openen (button.upload)
-    3) Het verborgen input#file-input zichtbaar te maken via JS
-    4) Direct de afbeelding te uploaden zonder systeem-file-dialog
-    5) Automatisch wachten op de Invisible Turnstile-response
-    6) Een screenshot nemen van de resultaten
-    """
-
-    # Timestamp en output-map aanmaken
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    screenshot_path = os.path.join(results_dir, f"pimeyes_result_{timestamp}.png")
+    # 0️⃣ Output-map en timestamp
     os.makedirs(results_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    screenshot_path = os.path.join(results_dir, f"pimeyes_result_{timestamp}.png")
 
-    # Pas deze paden aan naar jouw installatie
-    chrome_path    = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-    user_data_dir  = r"C:\Users\mikre\AppData\Local\Google\Chrome\User Data\PWProfile"
+    # 1️⃣ Stel ChromeOptions in voor jouw echte Chrome
+    options = uc.ChromeOptions()
+    # Zet hier het pad naar jouw echte chrome.exe (indien nodig)
+    # options.binary_location = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    options.add_argument(r"--user-data-dir=C:\Users\mikre\AppData\Local\Google\Chrome\User Data")
+    options.add_argument("--profile-directory=Default")
+    options.add_argument("--start-maximized")
 
-    with sync_playwright() as p:
-        # 1️⃣ Launch jouw echte Chrome met persistent profiel
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=user_data_dir,
-            headless=False,
-            executable_path=chrome_path,
-            args=["--start-maximized", "--disable-blink-features=AutomationControlled"]
-        )
-        page = context.pages[0] if context.pages else context.new_page()
+    # 2️⃣ Start undetected-chromedriver w/ webdriver-manager voor de driver
+    service = Service(ChromeDriverManager().install())
+    driver = uc.Chrome(options=options, service=service)
+    wait = WebDriverWait(driver, 20)
 
-        # 2️⃣ Ga naar PimEyes
-        page.goto("https://pimeyes.com/en")
-
-        # 3️⃣ Cookies accepteren
+    try:
+        # 3️⃣ Navigeer & accepteer cookies
+        driver.get("https://pimeyes.com/en")
         try:
-            page.wait_for_selector('button:has-text("Allow all")', timeout=5000)
-            page.click('button:has-text("Allow all")')
-            print("✅ Cookies geaccepteerd")
+            wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Allow all')]"))).click()
         except:
-            print("⚠️ Geen cookie-popup gevonden")
+            pass
 
-        # 4️⃣ Upload-modal openen
-        try:
-            page.wait_for_selector("button.upload", timeout=10000)
-            page.click("button.upload")
-            page.wait_for_selector(".dropzone-blue.dropzone", timeout=10000)
-            print("✅ Upload-modal geopend")
-        except Exception as e:
-            print(f"❌ Kon de upload-modal niet openen: {e}")
-            context.close()
-            return None
+        # 4️⃣ Open de upload-modal
+        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.upload"))).click()
 
-        # 5️⃣ Verborgen <input#file-input> zichtbaar maken
-        page.evaluate('''() => {
+        # 5️⃣ Forceer verborgen input actief
+        driver.execute_script("""
             const el = document.querySelector('#file-input');
             if (el) {
-                el.removeAttribute('hidden');
+                el.hidden = false;
                 el.style.display = 'block';
                 el.style.visibility = 'visible';
-                el.style.opacity = '1';
-                el.style.position = 'static';
                 el.disabled = false;
             }
-        }''')
-        print("✅ Input-veld zichtbaar gemaakt")
+        """)
 
-        # 6️⃣ Bestand uploaden
+        # 6️⃣ Upload je afbeelding
+        file_input = driver.find_element(By.CSS_SELECTOR, "#file-input")
+        file_input.send_keys(os.path.abspath(image_path))
+
+        # 7️⃣ Wacht op invisible Turnstile-response token
         try:
-            page.locator('#file-input').first.set_input_files(image_path)
-            print("✅ Bestand geüpload via eerste #file-input")
-        except Exception as e:
-            print(f"❌ Upload mislukt: {e}")
-            page.screenshot(path=os.path.join(results_dir, f"upload_fail_{timestamp}.png"))
-            context.close()
-            return None
+            wait.until(lambda d: d.execute_script(
+                "return document.querySelector('input[name=\"cf-turnstile-response\"]').value.length>0"
+            ))
+            print("✅ Turnstile-token ontvangen")
+        except:
+            print("⚠️ Geen Turnstile-token na timeout")
 
-        # 7️⃣ Kort wachten zodat Turnstile kan verwerken
-        page.wait_for_timeout(2000)
+        # 8️⃣ Screenshot van de resultaten
+        time.sleep(2)
+        driver.save_screenshot(screenshot_path)
+        print(f"📸 Screenshot opgeslagen: {screenshot_path}")
 
-        # 8️⃣ Wacht op Invisible Turnstile-response token
-        try:
-            page.wait_for_selector('input[name="cf-turnstile-response"]', timeout=10000)
-            page.wait_for_function(
-                "document.querySelector('input[name=\"cf-turnstile-response\"]').value.length > 0",
-                timeout=20000
-            )
-            print("✅ Invisible Turnstile automatisch geslaagd")
-        except Exception as e:
-            print(f"⚠️ Turnstile-response niet gevonden of timeout: {e}")
+    finally:
+        driver.quit()
 
-        # 9️⃣ Screenshot maken van de resultaten
-        page.wait_for_timeout(3000)
-        page.screenshot(path=screenshot_path)
-        print(f"✅ Screenshot opgeslagen: {screenshot_path}")
-
-        context.close()
-
-    # 🔟 Return metadata
     return {
         "pimeyes_used": True,
         "pimeyes_screenshot": screenshot_path,
